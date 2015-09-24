@@ -1,16 +1,24 @@
 {-# LANGUAGE BangPatterns          #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-module Data.StringMap.LOUDS where
+module Data.StringMap.LOUDS (
+    LOUDS
+  , louds
+  , root
+  , lookup
+  , foldWithKey
+  , toList
+  ) where
 
-import           Data.StringMap.Base         as SM hiding (lookup, null, (!), child, size)
+import           Data.StringMap.Base         as SM hiding (lookup, null, (!), child, size, foldWithKey, toList, size)
 
 import           Succinct.Dictionary.Builder
 import           Succinct.Dictionary.Class
 import           Succinct.Dictionary.Poppy
 import Succinct.Tree.LOUDS (Zipper(..), children, root, parent)
 
-import Data.Foldable
+import Data.Foldable hiding (toList)
 import           Data.Bits
 import qualified Data.Vector                 as V
 import qualified Data.Vector.Generic         as GV
@@ -54,6 +62,9 @@ data LOUDS a =
   LOUDS !Poppy !Poppy !(P.Vector Char) !(V.Vector a)
   deriving (Show)
 
+-- | Bogus wrapper to hide the non standard `Buildable` instance.
+newtype LOUDS' a = LOUDS' { unLOUDS :: (LOUDS a) }
+
 instance Functor LOUDS where
   fmap f (LOUDS louds terminal label output) =
     LOUDS louds terminal label (fmap f output)
@@ -84,7 +95,7 @@ instance Select0 (LOUDS a) where
   select0 (LOUDS l _ _ _)i = select0 l i
   {-# INLINE select0 #-}
 
-instance Buildable (StringMap a) (LOUDS a) where
+instance Buildable (StringMap a) (LOUDS' a) where
   builder = Builder $ case builder :: Builder  Bool Poppy of
     Builder (Building kl hl zl) -> case builder :: Builder Bool Poppy of -- louds
       Builder (Building kt ht zt) -> case builder :: Builder Char (P.Vector Char) of -- terminal
@@ -119,16 +130,17 @@ instance Buildable (StringMap a) (LOUDS a) where
             step (BuildLOUDS louds terminal label output) _  = do
               return (BuildLOUDS louds terminal label output)
 
-            stop (BuildLOUDS louds terminal label output) =
-              LOUDS
-              <$> kl louds
-              <*> kt terminal
-              <*> kc label
-              <*> ko output
+            stop (BuildLOUDS louds terminal label output) = do
+              l <- LOUDS
+                   <$> kl louds
+                   <*> kt terminal
+                   <*> kc label
+                   <*> ko output
+              return (LOUDS' l)
   {-# INLINE builder #-}
 
 louds :: StringMap a -> LOUDS a
-louds = build . loudsnodes
+louds = unLOUDS . build . loudsnodes
 {-# INLINE louds #-}
 
 traverseChild :: Char -> Zipper (LOUDS a) -> Maybe (Zipper (LOUDS a))
@@ -140,6 +152,7 @@ traverseChild w node = go (children node)
       | otherwise              = go nx
 {-# INLINE traverseChild #-}
 
+-- | Takes a LOUDS-node and traverses the nodes according to a given string.
 traverse' :: String -> Zipper (LOUDS a) -> Maybe (Zipper (LOUDS a))
 traverse' = go
   where
@@ -150,6 +163,7 @@ traverse' = go
         Nothing    -> Nothing
 {-# INLINE traverse' #-}
 
+-- | Lookup a complete string in a LOUDS-trie.
 lookup :: String -> LOUDS a -> Maybe a
 lookup s lds@(LOUDS _ terminal _ output) =
   case traverse' s (root lds) of
@@ -157,6 +171,29 @@ lookup s lds@(LOUDS _ terminal _ output) =
       | terminal ! (i - 1) -> Just ( output V.! (rank1 terminal (i - 1)) )
     _                      -> Nothing
 {-# INLINE lookup #-}
+
+rfold' :: (String -> a -> b -> b) -> b -> (Key -> Key) -> Zipper (LOUDS a) -> b
+rfold' f r' k0 node = go k0 r' (children node)
+  where
+    go kf r [] = r
+    go kf r (n@(Zipper i j (LOUDS _ terminal label output)):nx)
+      | isTerminal = let r''  = go kf r nx
+                         r''' = f ((kf . ((label P.! (i - 1)) :)) []) value r''
+                     in rfold' f r''' (kf . ((label P.! (i - 1)) :)) n
+      | otherwise  =
+          let r'' = go kf r nx in rfold' f r'' (kf . ((label P.! (i - 1)) :)) n
+      where
+        isTerminal = terminal ! (i - 1)
+        value = output V.! (rank1 terminal (i - 1))
+{-# INLINE rfold' #-}
+
+foldWithKey :: (String -> a -> b -> b) -> b -> Zipper (LOUDS a) -> b
+foldWithKey f e = rfold' f e id
+{-# INLINE foldWithKey #-}
+
+toList :: Zipper (LOUDS a) -> [(String, a)]
+toList = foldWithKey (\k v r -> (k, v): r) []
+{-# INLINE toList #-}
 
 mergeWithKey :: (String -> a -> b -> Maybe c)
              -> (LOUDS a -> LOUDS c)

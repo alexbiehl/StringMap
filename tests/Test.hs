@@ -1,7 +1,8 @@
 module Main where
 
 import qualified Data.StringMap.Base as SM
-import Data.StringMap.LOUDS
+import Data.StringMap.LOUDS hiding (toList)
+import qualified Data.StringMap.LOUDS as LOUDS1
 
 import qualified Succinct.Tree.LOUDS as LOUDS
 
@@ -16,16 +17,8 @@ main = do
                       , ("3456", 4)
                       ]
 
-  mapM_ (putStrLn . show) (loudsnodes x)
 
-  let LOUDS lds tmn lbl out = louds x
-
-  print lds
-  print tmn
-
-
-  let y = LOUDS.root (louds x)
-      y' = louds x
+  let y' = louds x
 
   print (lookup "3456" y')
   print (lookup "12345" y')
@@ -33,3 +26,5 @@ main = do
   print (lookup "23456" y')
   print (lookup "1234bs" y')
   print (lookup "sadasd" y')
+
+  print (LOUDS1.toList (LOUDS.root y'))
