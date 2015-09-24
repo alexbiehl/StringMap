@@ -1,0 +1,6 @@
+packages:
+  - '.'
+  - location:
+      git: https://github.com/ekmett/succinct.git
+      commit: 7e884138c2e943f5ca08f56b58b409d08b870ab9
+resolver: lts-3.0
