@@ -54,6 +54,20 @@ data LOUDS a =
   LOUDS !Poppy !Poppy !(P.Vector Char) !(V.Vector a)
   deriving (Show)
 
+instance Functor LOUDS where
+  fmap f (LOUDS louds terminal label output) =
+    LOUDS louds terminal label (fmap f output)
+  {-# INLINE fmap #-}
+
+instance Foldable LOUDS where
+  foldMap f (LOUDS _ _ _ a) = foldMap f a
+  {-# INLINE foldMap #-}
+
+instance Traversable LOUDS where
+  traverse f (LOUDS louds terminal label output) =
+    LOUDS louds terminal label <$> traverse f output
+  {-# INLINE traverse #-}
+
 instance Access Bool (LOUDS a) where
   size (LOUDS l _ _ _) = size l
   {-# INLINE size #-}
@@ -134,6 +148,7 @@ traverse' = go
       case traverseChild w node of
         Just node' -> go wx node'
         Nothing    -> Nothing
+{-# INLINE traverse' #-}
 
 lookup :: String -> LOUDS a -> Maybe a
 lookup s lds@(LOUDS _ terminal _ output) =
@@ -142,3 +157,13 @@ lookup s lds@(LOUDS _ terminal _ output) =
       | terminal ! (i - 1) -> Just ( output V.! (rank1 terminal (i - 1)) )
     _                      -> Nothing
 {-# INLINE lookup #-}
+
+mergeWithKey :: (String -> a -> b -> Maybe c)
+             -> (LOUDS a -> LOUDS c)
+             -> (LOUDS b -> LOUDS c)
+             -> LOUDS a
+             -> LOUDS b
+             -> LOUDS c
+mergeWithKey f g1 g2 a b = go (root a) (root b)
+  where
+    go z1 z2 = undefined
