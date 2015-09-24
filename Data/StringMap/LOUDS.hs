@@ -1,12 +1,14 @@
 {-# LANGUAGE BangPatterns          #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 module Data.StringMap.LOUDS where
 
-import           Data.StringMap.Base         as SM hiding (lookup, null, (!))
+import           Data.StringMap.Base         as SM hiding (lookup, null, (!), child, size)
 
 import           Succinct.Dictionary.Builder
 import           Succinct.Dictionary.Class
 import           Succinct.Dictionary.Poppy
+import Succinct.Tree.LOUDS (Zipper(..), children, root, parent)
 
 import Data.Foldable
 import           Data.Bits
@@ -52,6 +54,22 @@ data LOUDS a =
   LOUDS !Poppy !Poppy !(P.Vector Char) !(V.Vector a)
   deriving (Show)
 
+instance Access Bool (LOUDS a) where
+  size (LOUDS l _ _ _) = size l
+  {-# INLINE size #-}
+  (!) (LOUDS l _ _ _) i = l ! i
+  {-# INLINE (!) #-}
+
+instance Dictionary Bool (LOUDS a) where
+  rank a (LOUDS l _ _ _) i = rank a l i
+  {-# INLINE rank #-}
+  select a (LOUDS l _ _ _) i = select a l i
+  {-# INLINE select #-}
+
+instance Select0 (LOUDS a) where
+  select0 (LOUDS l _ _ _)i = select0 l i
+  {-# INLINE select0 #-}
+
 instance Buildable (StringMap a) (LOUDS a) where
   builder = Builder $ case builder :: Builder  Bool Poppy of
     Builder (Building kl hl zl) -> case builder :: Builder Bool Poppy of -- louds
@@ -71,18 +89,21 @@ instance Buildable (StringMap a) (LOUDS a) where
               label' <- hc label '\0'
               return (BuildLOUDS louds' terminal' label' output)
 
+            step (BuildLOUDS louds terminal label output) (Branch sym (Leaf value) _)  = do
+              louds' <- hl louds True
+              terminal' <- ht terminal True
+              label' <- hc label sym
+              output' <- ho output value
+              return (BuildLOUDS louds' terminal' label' output')
+
             step (BuildLOUDS louds terminal label output) (Branch sym _ _)  = do
               louds' <- hl louds True
               terminal' <- ht terminal False
               label' <- hc label sym
-              return (BuildLOUDS louds' terminal label' output)
+              return (BuildLOUDS louds' terminal' label' output)
 
-            step (BuildLOUDS louds terminal label output) (Val value _)  = do
-              louds' <- hl louds False
-              terminal' <- ht terminal True
-              label' <- hc label '\0'
-              output' <- ho output value
-              return (BuildLOUDS louds' terminal' label' output')
+            step (BuildLOUDS louds terminal label output) _  = do
+              return (BuildLOUDS louds terminal label output)
 
             stop (BuildLOUDS louds terminal label output) =
               LOUDS
@@ -96,76 +117,28 @@ louds :: StringMap a -> LOUDS a
 louds = build . loudsnodes
 {-# INLINE louds #-}
 
-data Node =
-  Node !Int !Int
-  deriving (Eq, Show)
-
-root :: LOUDS a -> Node
-root _ = Node 1 0
-
-binarySearch :: (Ord a, GV.Vector v a) => v a -> a -> Int -> Int -> Maybe Int
-binarySearch v e = loop
+traverseChild :: Char -> Zipper (LOUDS a) -> Maybe (Zipper (LOUDS a))
+traverseChild w node = go (children node)
   where
-    loop !l !u
-      | u <= l = Nothing
-      | otherwise = case compare (v `GV.unsafeIndex` k) e of
-                      LT -> loop (k + 1) u
-                      EQ -> Just k
-                      GT -> loop l k
-      where
-        k = (u + l) `unsafeShiftR` 1
-{-# INLINE binarySearch #-}
+    go [] = Nothing
+    go (Zipper i j lds@(LOUDS _ _ label _):nx)
+      | label P.! (i - 1) == w = Just (Zipper i j lds)
+      | otherwise              = go nx
+{-# INLINE traverseChild #-}
+
+traverse' :: String -> Zipper (LOUDS a) -> Maybe (Zipper (LOUDS a))
+traverse' = go
+  where
+    go [] node     = Just node
+    go (w:wx) node =
+      case traverseChild w node of
+        Just node' -> go wx node'
+        Nothing    -> Nothing
 
 lookup :: String -> LOUDS a -> Maybe a
-lookup s lds@(LOUDS louds terminal _ output) = case lookup' s lds of
-  Just (Node i j)
-    | terminal ! (i - 1) ->
-        Just (output V.! (rank1 terminal (i - 1) - 1)) where
-  _ -> Nothing
-
-lookup' :: String -> LOUDS a -> Maybe Node
-lookup' s lds@(LOUDS louds  _ label _) =
-  go s (root lds)
-   where
-    go [] n = Just n
-    go (w:wx) (Node i j) =
-      case binarySearch label (traceShowId w) (traceShowId (fc - 1)) (traceShowId (lc - 1)) of
-      Just x | null wx -> Just (Node i j)
-             | otherwise ->
-               -- | We now know that we have to take (x - i)th child of i
-               go wx (Node (x + 1) (i - j))
-      Nothing -> Nothing
-      where
-        -- First child of node i. 1-based.
-        fc = select0 louds (i - j) + 1
-        lc = select0 louds (i - j + 1)
-
-{-
-main :: IO ()
-main = do
-  let x = SM.fromList [ ("12345", 1 :: Int)
-                      , ("12567", 2)
-                      , ("23456", 3)
-                      , ("3456", 4)
-                      ]
-
---      (children, siblings) = subforest x
-
---  mapM_ (putStrLn . show) children
---  putStr
-
-  mapM_ (putStrLn . show) (loudsnodes x)
-
-  let LOUDS lds tmn lbl out = louds x
-
-  print out
-  print lbl
-
-  print (children (root lds))
-
-  print (lookup "12345" (louds x))
-  print (lookup "23456" (louds x))
-  print (lookup "3456" (louds x))
-
-  --mapM_ (putStrLn . show) (loudsnodes x)
--}
+lookup s lds@(LOUDS _ terminal _ output) =
+  case traverse' s (root lds) of
+    Just (Zipper i j _)
+      | terminal ! (i - 1) -> Just ( output V.! (rank1 terminal (i - 1)) )
+    _                      -> Nothing
+{-# INLINE lookup #-}
